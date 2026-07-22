@@ -11,7 +11,7 @@ Uses **PostgreSQL**, **Redis**, **Kafka**, and **MailHog** — not in-memory stu
 | API | Spring Boot 3 / REST |
 | DB | PostgreSQL + Flyway + JPA |
 | Cache / idempotency / rate limit | Redis |
-| Ingress + DLQ | Apache Kafka |
+| Ingress + DLQ | Kafka API (Redpanda in Docker Compose) |
 | Email | SMTP → MailHog |
 | SMS / WhatsApp / Push / Slack | HTTP webhooks (local provider inbox) |
 | Workers | `@KafkaListener` + `@Scheduled` |
