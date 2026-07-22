@@ -4,44 +4,49 @@ import com.notificationplatform.channel.ChannelSendResult;
 import com.notificationplatform.channel.ChannelSenderRegistry;
 import com.notificationplatform.domain.DeliveryAttempt;
 import com.notificationplatform.domain.Notification;
+import com.notificationplatform.persistence.DeliveryAttemptEntity;
+import com.notificationplatform.persistence.DeliveryAttemptJpaRepository;
 import com.notificationplatform.repository.NotificationRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
-public final class DeliveryService {
+@Service
+public class DeliveryService {
 
     private final ChannelSenderRegistry channelSenderRegistry;
     private final NotificationRepository notificationRepository;
+    private final DeliveryAttemptJpaRepository attemptRepository;
     private final Clock clock;
-    private final ConcurrentLinkedQueue<DeliveryAttempt> attempts = new ConcurrentLinkedQueue<>();
 
     public DeliveryService(
             ChannelSenderRegistry channelSenderRegistry,
             NotificationRepository notificationRepository,
+            DeliveryAttemptJpaRepository attemptRepository,
             Clock clock) {
-        this.channelSenderRegistry = Objects.requireNonNull(channelSenderRegistry, "channelSenderRegistry");
-        this.notificationRepository = Objects.requireNonNull(notificationRepository, "notificationRepository");
-        this.clock = Objects.requireNonNull(clock, "clock");
+        this.channelSenderRegistry = channelSenderRegistry;
+        this.notificationRepository = notificationRepository;
+        this.attemptRepository = attemptRepository;
+        this.clock = clock;
     }
 
+    @Transactional
     public ChannelSendResult deliver(Notification notification) {
-        Objects.requireNonNull(notification, "notification");
         notification.markSending(clock.instant());
         notificationRepository.save(notification);
 
         ChannelSendResult result = channelSenderRegistry.get(notification.channel()).send(notification);
-        DeliveryAttempt attempt = new DeliveryAttempt(
-                notification.id(),
-                notification.attemptCount(),
-                clock.instant(),
-                result.success(),
-                result.providerMessageId(),
-                result.errorMessage());
-        attempts.add(attempt);
+
+        DeliveryAttemptEntity attempt = new DeliveryAttemptEntity();
+        attempt.setNotificationId(notification.id());
+        attempt.setAttemptNumber(notification.attemptCount());
+        attempt.setAttemptedAt(clock.instant());
+        attempt.setSuccess(result.success());
+        attempt.setProviderResponse(result.providerMessageId());
+        attempt.setErrorMessage(result.errorMessage());
+        attemptRepository.save(attempt);
 
         if (result.success()) {
             notification.markDelivered(clock.instant());
@@ -52,13 +57,16 @@ public final class DeliveryService {
         return result;
     }
 
+    @Transactional(readOnly = true)
     public List<DeliveryAttempt> attemptsFor(String notificationId) {
-        List<DeliveryAttempt> matched = new ArrayList<>();
-        for (DeliveryAttempt attempt : attempts) {
-            if (attempt.notificationId().equals(notificationId)) {
-                matched.add(attempt);
-            }
-        }
-        return matched;
+        return attemptRepository.findByNotificationIdOrderByAttemptNumberAsc(notificationId).stream()
+                .map(entity -> new DeliveryAttempt(
+                        entity.getNotificationId(),
+                        entity.getAttemptNumber(),
+                        entity.getAttemptedAt(),
+                        entity.isSuccess(),
+                        entity.getProviderResponse(),
+                        entity.getErrorMessage()))
+                .toList();
     }
 }

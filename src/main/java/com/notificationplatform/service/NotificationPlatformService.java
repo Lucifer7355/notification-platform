@@ -2,49 +2,42 @@ package com.notificationplatform.service;
 
 import com.notificationplatform.analytics.AnalyticsService;
 import com.notificationplatform.channel.ChannelSendResult;
-import com.notificationplatform.config.PlatformConfig;
+import com.notificationplatform.config.PlatformProperties;
 import com.notificationplatform.dlq.DeadLetterQueue;
 import com.notificationplatform.domain.Notification;
 import com.notificationplatform.domain.NotificationStatus;
 import com.notificationplatform.dto.NotificationReceipt;
 import com.notificationplatform.dto.SendNotificationRequest;
 import com.notificationplatform.exception.ValidationException;
-import com.notificationplatform.kafka.BrokerMessage;
 import com.notificationplatform.kafka.MessageBroker;
 import com.notificationplatform.queue.PriorityNotificationQueue;
 import com.notificationplatform.redis.CacheStore;
 import com.notificationplatform.repository.NotificationRepository;
 import com.notificationplatform.retry.RetryPolicy;
-import com.notificationplatform.scheduling.NotificationScheduler;
 import com.notificationplatform.template.TemplateRenderer;
 import com.notificationplatform.util.IdGenerator;
 import com.notificationplatform.validation.NotificationRequestValidator;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.PriorityQueue;
-import java.util.concurrent.locks.ReentrantLock;
 
-public final class NotificationPlatformService {
+@Service
+public class NotificationPlatformService {
 
-    private static final String CONSUMER_GROUP = "notification-workers";
     private static final Duration IDEMPOTENCY_TTL = Duration.ofHours(24);
     private static final Duration RATE_LIMIT_WINDOW = Duration.ofMinutes(1);
-    private static final long DEFAULT_RATE_LIMIT = 1000;
 
-    private final PlatformConfig config;
+    private final PlatformProperties properties;
     private final NotificationRequestValidator validator;
     private final TemplateService templateService;
     private final NotificationRepository notificationRepository;
     private final MessageBroker messageBroker;
     private final PriorityNotificationQueue priorityQueue;
-    private final NotificationScheduler scheduler;
     private final DeliveryService deliveryService;
     private final RetryPolicy retryPolicy;
     private final DeadLetterQueue deadLetterQueue;
@@ -52,18 +45,14 @@ public final class NotificationPlatformService {
     private final CacheStore cacheStore;
     private final IdGenerator idGenerator;
     private final Clock clock;
-    private final PriorityQueue<DelayedRetry> retryHeap;
-    private final ReentrantLock retryLock = new ReentrantLock();
-    private final long rateLimitPerRecipient;
 
     public NotificationPlatformService(
-            PlatformConfig config,
+            PlatformProperties properties,
             NotificationRequestValidator validator,
             TemplateService templateService,
             NotificationRepository notificationRepository,
             MessageBroker messageBroker,
             PriorityNotificationQueue priorityQueue,
-            NotificationScheduler scheduler,
             DeliveryService deliveryService,
             RetryPolicy retryPolicy,
             DeadLetterQueue deadLetterQueue,
@@ -71,60 +60,36 @@ public final class NotificationPlatformService {
             CacheStore cacheStore,
             IdGenerator idGenerator,
             Clock clock) {
-        this(config, validator, templateService, notificationRepository, messageBroker, priorityQueue,
-                scheduler, deliveryService, retryPolicy, deadLetterQueue, analyticsService, cacheStore,
-                idGenerator, clock, DEFAULT_RATE_LIMIT);
+        this.properties = properties;
+        this.validator = validator;
+        this.templateService = templateService;
+        this.notificationRepository = notificationRepository;
+        this.messageBroker = messageBroker;
+        this.priorityQueue = priorityQueue;
+        this.deliveryService = deliveryService;
+        this.retryPolicy = retryPolicy;
+        this.deadLetterQueue = deadLetterQueue;
+        this.analyticsService = analyticsService;
+        this.cacheStore = cacheStore;
+        this.idGenerator = idGenerator;
+        this.clock = clock;
     }
 
-    public NotificationPlatformService(
-            PlatformConfig config,
-            NotificationRequestValidator validator,
-            TemplateService templateService,
-            NotificationRepository notificationRepository,
-            MessageBroker messageBroker,
-            PriorityNotificationQueue priorityQueue,
-            NotificationScheduler scheduler,
-            DeliveryService deliveryService,
-            RetryPolicy retryPolicy,
-            DeadLetterQueue deadLetterQueue,
-            AnalyticsService analyticsService,
-            CacheStore cacheStore,
-            IdGenerator idGenerator,
-            Clock clock,
-            long rateLimitPerRecipient) {
-        this.config = Objects.requireNonNull(config, "config");
-        this.validator = Objects.requireNonNull(validator, "validator");
-        this.templateService = Objects.requireNonNull(templateService, "templateService");
-        this.notificationRepository = Objects.requireNonNull(notificationRepository, "notificationRepository");
-        this.messageBroker = Objects.requireNonNull(messageBroker, "messageBroker");
-        this.priorityQueue = Objects.requireNonNull(priorityQueue, "priorityQueue");
-        this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
-        this.deliveryService = Objects.requireNonNull(deliveryService, "deliveryService");
-        this.retryPolicy = Objects.requireNonNull(retryPolicy, "retryPolicy");
-        this.deadLetterQueue = Objects.requireNonNull(deadLetterQueue, "deadLetterQueue");
-        this.analyticsService = Objects.requireNonNull(analyticsService, "analyticsService");
-        this.cacheStore = Objects.requireNonNull(cacheStore, "cacheStore");
-        this.idGenerator = Objects.requireNonNull(idGenerator, "idGenerator");
-        this.clock = Objects.requireNonNull(clock, "clock");
-        this.rateLimitPerRecipient = rateLimitPerRecipient;
-        this.retryHeap = new PriorityQueue<>(Comparator.comparing(DelayedRetry::readyAt));
-    }
-
+    @Transactional
     public NotificationReceipt accept(SendNotificationRequest request) {
         return accept(request, null);
     }
 
+    @Transactional
     public NotificationReceipt accept(SendNotificationRequest request, String idempotencyKey) {
-        Objects.requireNonNull(request, "request");
         validator.validate(request);
 
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            String cacheKey = "idempotency:" + idempotencyKey;
-            Optional<String> existing = cacheStore.get(cacheKey);
+            Optional<String> existing = cacheStore.get("idempotency:" + idempotencyKey);
             if (existing.isPresent()) {
-                Notification existingNotification = notificationRepository.findById(existing.get())
+                return notificationRepository.findById(existing.get())
+                        .map(this::toReceipt)
                         .orElseThrow(() -> new ValidationException("Idempotency key points to missing notification"));
-                return toReceipt(existingNotification);
             }
         }
 
@@ -160,19 +125,17 @@ public final class NotificationPlatformService {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             boolean first = cacheStore.setIfAbsent("idempotency:" + idempotencyKey, notification.id(), IDEMPOTENCY_TTL);
             if (!first) {
-                Optional<String> winner = cacheStore.get("idempotency:" + idempotencyKey);
-                if (winner.isPresent()) {
-                    return notificationRepository.findById(winner.get())
-                            .map(this::toReceipt)
-                            .orElse(toReceipt(notification));
-                }
+                return cacheStore.get("idempotency:" + idempotencyKey)
+                        .flatMap(notificationRepository::findById)
+                        .map(this::toReceipt)
+                        .orElseGet(() -> toReceipt(notification));
             }
         }
 
         if (request.scheduledAt().isPresent() && request.scheduledAt().get().isAfter(now)) {
-            scheduler.schedule(notification, request.scheduledAt().get());
-            analyticsService.recordScheduled();
+            notification.markScheduled();
             notificationRepository.save(notification);
+            analyticsService.recordScheduled();
             return toReceipt(notification);
         }
 
@@ -180,80 +143,65 @@ public final class NotificationPlatformService {
         return toReceipt(notification);
     }
 
-    public int drainKafkaToPriorityQueue(int maxMessages) {
-        int drained = 0;
-        while (drained < maxMessages) {
-            Optional<BrokerMessage> message = messageBroker.poll(config.kafkaTopic(), CONSUMER_GROUP);
-            if (message.isEmpty()) {
-                break;
-            }
-            BrokerMessage brokerMessage = message.get();
-            Notification notification = notificationRepository.findById(brokerMessage.payload())
-                    .orElseThrow(() -> new ValidationException(
-                            "Kafka payload references unknown notification: " + brokerMessage.payload()));
-            priorityQueue.enqueue(notification);
-            messageBroker.commit(config.kafkaTopic(), CONSUMER_GROUP, brokerMessage.offset());
-            drained++;
-        }
-        return drained;
+    public void enqueueFromKafka(String notificationId) {
+        Notification notification = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new ValidationException("Kafka payload references unknown notification: " + notificationId));
+        priorityQueue.enqueue(notification);
     }
 
+    @Transactional
     public int releaseDueScheduled() {
-        List<Notification> due = scheduler.dueNotifications();
+        List<Notification> due = notificationRepository.findDueScheduled(clock.instant());
         for (Notification notification : due) {
             publishToKafka(notification);
         }
         return due.size();
     }
 
+    @Transactional
     public int releaseDueRetries() {
-        Instant now = clock.instant();
-        List<Notification> released = new ArrayList<>();
-        retryLock.lock();
-        try {
-            while (!retryHeap.isEmpty() && !retryHeap.peek().readyAt().isAfter(now)) {
-                released.add(retryHeap.poll().notification());
-            }
-        } finally {
-            retryLock.unlock();
-        }
-        for (Notification notification : released) {
+        List<Notification> due = notificationRepository.findDueRetries(clock.instant());
+        for (Notification notification : due) {
             priorityQueue.enqueue(notification);
         }
-        return released.size();
+        return due.size();
     }
 
+    @Transactional
     public Optional<Notification> processNext() {
-        releaseDueRetries();
         Optional<Notification> polled = priorityQueue.poll();
         if (polled.isEmpty()) {
             return Optional.empty();
         }
-        Notification notification = polled.get();
+        Notification queued = polled.get();
+        Notification notification = notificationRepository.findById(queued.id()).orElse(queued);
+
         ChannelSendResult result = deliveryService.deliver(notification);
         priorityQueue.acknowledge(notification.id());
 
         if (result.success()) {
             analyticsService.recordDelivered(notification.channel());
-            return Optional.of(notification);
+            return notificationRepository.findById(notification.id());
         }
 
         analyticsService.recordFailed();
-        if (retryPolicy.shouldRetry(notification.attemptCount())) {
-            Duration delay = retryPolicy.nextDelay(notification.attemptCount());
-            notification.markRetrying(result.errorMessage());
-            notificationRepository.save(notification);
+        Notification latest = notificationRepository.findById(notification.id()).orElse(notification);
+        if (retryPolicy.shouldRetry(latest.attemptCount())) {
+            Duration delay = retryPolicy.nextDelay(latest.attemptCount());
+            Instant retryAt = clock.instant().plus(delay);
+            latest.markRetrying(result.errorMessage(), retryAt);
+            notificationRepository.save(latest);
             analyticsService.recordRetry();
-            scheduleRetry(notification, clock.instant().plus(delay));
         } else {
-            deadLetterQueue.enqueue(notification, result.errorMessage());
-            messageBroker.publish(config.dlqTopic(), notification.id(), notification.id());
+            deadLetterQueue.enqueue(latest, result.errorMessage());
+            messageBroker.publish(properties.dlqTopic(), latest.id(), latest.id());
             analyticsService.recordDeadLetter();
-            notificationRepository.save(notification);
+            notificationRepository.save(latest);
         }
-        return Optional.of(notification);
+        return notificationRepository.findById(notification.id());
     }
 
+    @Transactional
     public int processAvailable(int max) {
         int processed = 0;
         while (processed < max) {
@@ -281,10 +229,6 @@ public final class NotificationPlatformService {
         return priorityQueue;
     }
 
-    public NotificationScheduler scheduler() {
-        return scheduler;
-    }
-
     public MessageBroker messageBroker() {
         return messageBroker;
     }
@@ -293,26 +237,8 @@ public final class NotificationPlatformService {
         return deliveryService;
     }
 
-    public int pendingRetries() {
-        retryLock.lock();
-        try {
-            return retryHeap.size();
-        } finally {
-            retryLock.unlock();
-        }
-    }
-
-    private void scheduleRetry(Notification notification, Instant readyAt) {
-        retryLock.lock();
-        try {
-            retryHeap.offer(new DelayedRetry(notification, readyAt));
-        } finally {
-            retryLock.unlock();
-        }
-    }
-
     private void publishToKafka(Notification notification) {
-        messageBroker.publish(config.kafkaTopic(), notification.id(), notification.id());
+        messageBroker.publish(properties.kafkaTopic(), notification.id(), notification.id());
         notification.markQueued();
         notificationRepository.save(notification);
     }
@@ -320,10 +246,10 @@ public final class NotificationPlatformService {
     private void enforceRateLimit(SendNotificationRequest request) {
         String key = "rate:" + request.channel() + ":" + request.recipient().trim();
         long count = cacheStore.increment(key, RATE_LIMIT_WINDOW);
-        if (count > rateLimitPerRecipient) {
+        if (count > properties.rateLimitPerRecipient()) {
             throw new ValidationException(
                     "Rate limit exceeded for " + request.recipient() + " on " + request.channel()
-                            + " (" + count + "/" + rateLimitPerRecipient + " per minute)");
+                            + " (" + count + "/" + properties.rateLimitPerRecipient() + " per minute)");
         }
     }
 
@@ -336,8 +262,5 @@ public final class NotificationPlatformService {
                 notification.status(),
                 notification.createdAt(),
                 notification.scheduledAt().orElse(null));
-    }
-
-    private record DelayedRetry(Notification notification, Instant readyAt) {
     }
 }

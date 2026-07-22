@@ -1,7 +1,5 @@
 package com.notificationplatform.retry;
 
-import com.notificationplatform.config.PlatformConfig;
-
 import java.time.Duration;
 import java.util.Objects;
 
@@ -11,14 +9,6 @@ public final class ExponentialBackoffRetryPolicy implements RetryPolicy {
     private final Duration initialBackoff;
     private final double multiplier;
     private final Duration maxBackoff;
-
-    public ExponentialBackoffRetryPolicy(PlatformConfig config) {
-        Objects.requireNonNull(config, "config");
-        this.maxAttempts = config.maxRetryAttempts();
-        this.initialBackoff = config.initialBackoff();
-        this.multiplier = config.backoffMultiplier();
-        this.maxBackoff = config.maxBackoff();
-    }
 
     public ExponentialBackoffRetryPolicy(
             int maxAttempts,

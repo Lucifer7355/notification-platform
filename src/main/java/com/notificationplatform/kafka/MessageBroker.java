@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Minimal Kafka-like broker abstraction used by the platform.
- * Swap InMemoryMessageBroker with a real Kafka client adapter in production.
+ * Kafka producer/admin port used by the platform.
+ * Consumption is handled by Spring {@code @KafkaListener}.
  */
 public interface MessageBroker {
 

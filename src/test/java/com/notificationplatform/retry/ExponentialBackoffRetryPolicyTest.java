@@ -1,6 +1,5 @@
 package com.notificationplatform.retry;
 
-import com.notificationplatform.config.PlatformConfig;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -12,12 +11,10 @@ class ExponentialBackoffRetryPolicyTest {
     @Test
     void nextDelay_growsExponentiallyUntilMax() {
         ExponentialBackoffRetryPolicy policy = new ExponentialBackoffRetryPolicy(
-                PlatformConfig.builder()
-                        .maxRetryAttempts(5)
-                        .initialBackoff(Duration.ofMillis(100))
-                        .backoffMultiplier(2.0)
-                        .maxBackoff(Duration.ofMillis(300))
-                        .build());
+                5,
+                Duration.ofMillis(100),
+                2.0,
+                Duration.ofMillis(300));
 
         assertThat(policy.nextDelay(1)).isEqualTo(Duration.ofMillis(100));
         assertThat(policy.nextDelay(2)).isEqualTo(Duration.ofMillis(200));

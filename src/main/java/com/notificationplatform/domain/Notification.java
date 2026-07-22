@@ -24,6 +24,7 @@ public final class Notification {
     private volatile String lastError;
     private volatile Instant lastAttemptAt;
     private volatile Instant deliveredAt;
+    private volatile Instant nextRetryAt;
 
     private Notification(Builder builder) {
         this.id = builder.id;
@@ -41,6 +42,7 @@ public final class Notification {
         this.lastError = builder.lastError;
         this.lastAttemptAt = builder.lastAttemptAt;
         this.deliveredAt = builder.deliveredAt;
+        this.nextRetryAt = builder.nextRetryAt;
     }
 
     public String id() {
@@ -103,8 +105,13 @@ public final class Notification {
         return Optional.ofNullable(deliveredAt);
     }
 
+    public Optional<Instant> nextRetryAt() {
+        return Optional.ofNullable(nextRetryAt);
+    }
+
     public synchronized void markQueued() {
         this.status = NotificationStatus.QUEUED;
+        this.nextRetryAt = null;
     }
 
     public synchronized void markScheduled() {
@@ -115,27 +122,32 @@ public final class Notification {
         this.status = NotificationStatus.SENDING;
         this.attemptCount++;
         this.lastAttemptAt = now;
+        this.nextRetryAt = null;
     }
 
     public synchronized void markDelivered(Instant now) {
         this.status = NotificationStatus.DELIVERED;
         this.deliveredAt = now;
         this.lastError = null;
+        this.nextRetryAt = null;
     }
 
-    public synchronized void markRetrying(String error) {
+    public synchronized void markRetrying(String error, Instant retryAt) {
         this.status = NotificationStatus.RETRYING;
         this.lastError = Objects.requireNonNull(error, "error");
+        this.nextRetryAt = Objects.requireNonNull(retryAt, "retryAt");
     }
 
     public synchronized void markFailed(String error) {
         this.status = NotificationStatus.FAILED;
         this.lastError = Objects.requireNonNull(error, "error");
+        this.nextRetryAt = null;
     }
 
     public synchronized void markDeadLettered(String error) {
         this.status = NotificationStatus.DEAD_LETTERED;
         this.lastError = Objects.requireNonNull(error, "error");
+        this.nextRetryAt = null;
     }
 
     public synchronized Notification copyForReplay() {
@@ -155,6 +167,7 @@ public final class Notification {
                 .lastError(lastError)
                 .lastAttemptAt(lastAttemptAt)
                 .deliveredAt(deliveredAt)
+                .nextRetryAt(nextRetryAt)
                 .build();
     }
 
@@ -178,6 +191,7 @@ public final class Notification {
         private String lastError;
         private Instant lastAttemptAt;
         private Instant deliveredAt;
+        private Instant nextRetryAt;
 
         public Builder id(String id) {
             this.id = id;
@@ -251,6 +265,11 @@ public final class Notification {
 
         public Builder deliveredAt(Instant deliveredAt) {
             this.deliveredAt = deliveredAt;
+            return this;
+        }
+
+        public Builder nextRetryAt(Instant nextRetryAt) {
+            this.nextRetryAt = nextRetryAt;
             return this;
         }
 

@@ -5,12 +5,14 @@ import com.notificationplatform.exception.TemplateNotFoundException;
 import com.notificationplatform.redis.CacheStore;
 import com.notificationplatform.repository.TemplateRepository;
 import com.notificationplatform.template.TemplateRenderer;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.Map;
-import java.util.Objects;
 
-public final class TemplateService {
+@Service
+public class TemplateService {
 
     private static final Duration TEMPLATE_CACHE_TTL = Duration.ofMinutes(10);
 
@@ -22,17 +24,18 @@ public final class TemplateService {
             TemplateRepository templateRepository,
             TemplateRenderer templateRenderer,
             CacheStore cacheStore) {
-        this.templateRepository = Objects.requireNonNull(templateRepository, "templateRepository");
-        this.templateRenderer = Objects.requireNonNull(templateRenderer, "templateRenderer");
-        this.cacheStore = Objects.requireNonNull(cacheStore, "cacheStore");
+        this.templateRepository = templateRepository;
+        this.templateRenderer = templateRenderer;
+        this.cacheStore = cacheStore;
     }
 
+    @Transactional
     public void register(NotificationTemplate template) {
-        Objects.requireNonNull(template, "template");
         templateRepository.save(template);
         cacheStore.set(cacheKey(template.id()), template.id(), TEMPLATE_CACHE_TTL);
     }
 
+    @Transactional(readOnly = true)
     public NotificationTemplate require(String templateId) {
         cacheStore.get(cacheKey(templateId)).orElseGet(() -> {
             NotificationTemplate loaded = templateRepository.findById(templateId)
@@ -44,6 +47,7 @@ public final class TemplateService {
                 .orElseThrow(() -> new TemplateNotFoundException(templateId));
     }
 
+    @Transactional(readOnly = true)
     public TemplateRenderer.RenderedTemplate render(String templateId, Map<String, String> variables) {
         NotificationTemplate template = require(templateId);
         return templateRenderer.render(template, variables);
